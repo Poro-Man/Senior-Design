@@ -2,15 +2,15 @@
   "ExpandedNodes": [
     "",
     "\\chapters",
-    "\\chapters\\2_tokenization_and_data",
-    "\\chapters\\2_tokenization_and_data\\2.6_sliding_windows_dataset",
     "\\chapters\\4 implementation",
     "\\chapters\\4 implementation\\4.7 Generating text",
     "\\chapters\\5 pretrainiing",
-    "\\chapters\\5 pretrainiing\\5.1",
-    "\\chapters\\5 pretrainiing\\5.2",
-    "\\chapters\\5 pretrainiing\\5.2\\resources"
+    "\\chapters\\5 pretrainiing\\5.3",
+    "\\chapters\\5 pretrainiing\\5.4",
+    "\\chapters\\5 pretrainiing\\5.4\\resources",
+    "\\chapters\\5 pretrainiing\\5.5",
+    "\\chapters\\5 pretrainiing\\5.5\\resources"
   ],
-  "SelectedNode": "\\chapters\\5 pretrainiing\\5.2\\resources\\work.py",
+  "SelectedNode": "\\chapters\\5 pretrainiing\\5.5",
   "PreviewInSolutionExplorer": false
 }

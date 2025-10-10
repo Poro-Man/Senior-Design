@@ -1,4 +1,5 @@
-ï»¿import os
+# -*- coding: utf-8 -*-
+import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -8,7 +9,7 @@ from resources.work import Toilet
 from resources.data import spawn_dataloader
 
 # -------------------------
-# Config (GPT-2 small-ish)
+# Config 
 # -------------------------
 GPT_CONFIG_124M = {
     "vocab_size": 50257,
@@ -21,12 +22,11 @@ GPT_CONFIG_124M = {
 }
 
 # -------------------------------------------------
-# Â§5.1 helpers â€” text <-> tokens and generation
-# ------------------------------------------------
+# 5.1 helpers — text <-> tokens and generation
+# -------------------------------------------------
 def get_device():
-    
     if torch.cuda.is_available():
-        gpu_name = torch.cuda.get_device_name(0)
+        _ = torch.cuda.get_device_name(0)  # keep it simple; no prints
         device = torch.device("cuda")
     else:
         device = torch.device("cpu")
@@ -44,21 +44,44 @@ def token_ids_to_text(token_ids: torch.Tensor, tokenizer):
     return tokenizer.decode(flat)
 
 @torch.no_grad()
-def generate_text_simple(model: nn.Module, idx: torch.Tensor,
-                         max_new_tokens: int, context_size: int):
-    """Greedy generation as in Â§5.1."""
+def generate(model, idx, max_new_tokens, context_size,
+                         temperature=1.0, top_k=None, eos_id=None):
+    
     model.eval()
-    idx = idx.to(next(model.parameters()).device)
-    for _ in range(max_new_tokens):
+    device = next(model.parameters()).device
+    idx = idx.to(device)
+
+    for _ in range(max_new_tokens):                   # A
         idx_cond = idx[:, -context_size:]
-        logits = model(idx_cond)
-        probs = torch.softmax(logits[:, -1, :], dim=-1)
-        next_id = torch.argmax(probs, dim=-1, keepdim=True)
-        idx = torch.cat([idx, next_id], dim=1)
+        with torch.no_grad():
+            logits = model(idx_cond)
+            logits = logits[:, -1, :]
+
+            if top_k is not None:                     # B
+                top_logits, _ = torch.topk(logits, top_k)
+                min_val = top_logits[:, -1]
+                logits = torch.where(
+                    logits < min_val.unsqueeze(-1),
+                    torch.tensor(float('-inf')).to(logits.device),
+                    logits
+                )
+
+            if temperature > 0.0:                     # C
+                logits = logits / temperature
+                probs = torch.softmax(logits, dim=-1)
+                idx_next = torch.multinomial(probs, num_samples=1)
+            else:                                     # D
+                idx_next = torch.argmax(logits, dim=-1, keepdim=True)
+
+            if eos_id is not None and (idx_next == eos_id).all():  # E
+                break
+
+            idx = torch.cat((idx, idx_next), dim=1)
     return idx
 
+
 # -------------------------------------------------
-# Â§5.1 loss utilities
+# 5.1 loss utilities
 # -------------------------------------------------
 def calc_loss_batch(input_batch, target_batch, model, device):
     input_batch, target_batch = input_batch.to(device), target_batch.to(device)
@@ -78,7 +101,7 @@ def calc_loss_loader(data_loader, model, device, num_batches=None):
     return total / limit
 
 # -------------------------------------------------
-# Â§5.2 evaluation + sample printer
+# 5.2 evaluation + sample printer
 # -------------------------------------------------
 def evaluate_model(model, train_loader, val_loader, device, eval_iter):
     model.eval()
@@ -92,13 +115,13 @@ def generate_and_print_sample(model, tokenizer, device, start_context, context_l
     model.eval()
     encoded = text_to_token_ids(start_context, tokenizer).to(device)
     with torch.no_grad():
-        out_ids = generate_text_simple(model, encoded, 50, context_length)
+        out_ids = generate(model, encoded, 50, context_length)
         decoded = token_ids_to_text(out_ids.cpu(), tokenizer)
         print(decoded.replace("\n", " "))
     model.train()
 
 # -------------------------------------------------
-# Â§5.2 main training loop (Listing 5.3)
+# 5.2 main training loop (Listing 5.3)
 # -------------------------------------------------
 def train_model_simple(model, train_loader, val_loader, optimizer, device,
                        num_epochs, eval_freq, eval_iter, start_context,
@@ -129,7 +152,7 @@ def train_model_simple(model, train_loader, val_loader, optimizer, device,
     return train_losses, val_losses, track_tokens_seen
 
 # -------------------------------------------------
-# Runner (book-style)
+# Runner  + 5.4 save/load
 # -------------------------------------------------
 if __name__ == "__main__":
     torch.manual_seed(123)
@@ -175,3 +198,43 @@ if __name__ == "__main__":
         context_length=GPT_CONFIG_124M["context_length"],
     )
 
+    # -------------------------------------------------
+    # 5.4 — Save model weights (state_dict) only
+    # -------------------------------------------------
+    torch.save(model.state_dict(), "model.pth")
+    print("Saved model weights to model.pth")
+
+    # -------------------------------------------------
+    # §5.4 — Save model + optimizer checkpoint
+    # -------------------------------------------------
+    torch.save(
+        {
+            "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+        },
+        "model_and_optimizer.pth",
+    )
+    print("Saved checkpoint to model_and_optimizer.pth")
+
+    # -------------------------------------------------
+    # 5.4 — Reload model + optimizer and continue 1 epoch
+    # -------------------------------------------------
+    checkpoint = torch.load("model_and_optimizer.pth", map_location=device)
+
+    # Recreate fresh instances (same config)
+    model = Toilet(GPT_CONFIG_124M).to(device)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=4e-4, weight_decay=0.1)
+
+    # Restore states
+    model.load_state_dict(checkpoint["model_state_dict"])
+    optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+    model.train()
+
+    print("Reloaded from checkpoint. Continuing training for 1 more epoch...")
+    _ = train_model_simple(
+        model, train_loader, val_loader, optimizer, device,
+        num_epochs=1, eval_freq=5, eval_iter=5,
+        start_context="Every effort moves you",
+        tokenizer=tokenizer,
+        context_length=GPT_CONFIG_124M["context_length"],
+    )

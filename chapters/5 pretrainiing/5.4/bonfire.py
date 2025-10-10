@@ -1,4 +1,5 @@
-﻿import os
+# -*- coding: utf-8 -*-
+import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -22,11 +23,10 @@ GPT_CONFIG_124M = {
 
 # -------------------------------------------------
 # §5.1 helpers — text <-> tokens and generation
-# ------------------------------------------------
+# -------------------------------------------------
 def get_device():
-    
     if torch.cuda.is_available():
-        gpu_name = torch.cuda.get_device_name(0)
+        _ = torch.cuda.get_device_name(0)  # quiet
         device = torch.device("cuda")
     else:
         device = torch.device("cpu")
@@ -44,8 +44,10 @@ def token_ids_to_text(token_ids: torch.Tensor, tokenizer):
     return tokenizer.decode(flat)
 
 @torch.no_grad()
-def generate_text_simple(model: nn.Module, idx: torch.Tensor,
-                         max_new_tokens: int, context_size: int):
+def generate_text_simple(model: nn.Module,
+                         idx: torch.Tensor,
+                         max_new_tokens: int,
+                         context_size: int):
     """Greedy generation as in §5.1."""
     model.eval()
     idx = idx.to(next(model.parameters()).device)
@@ -129,7 +131,7 @@ def train_model_simple(model, train_loader, val_loader, optimizer, device,
     return train_losses, val_losses, track_tokens_seen
 
 # -------------------------------------------------
-# Runner (book-style)
+# Runner (book-style) + §5.4 save/load
 # -------------------------------------------------
 if __name__ == "__main__":
     torch.manual_seed(123)
@@ -175,3 +177,35 @@ if __name__ == "__main__":
         context_length=GPT_CONFIG_124M["context_length"],
     )
 
+    # -------- §5.4: Save model weights (state_dict only) --------
+    torch.save(model.state_dict(), "model.pth")
+    print("Saved model weights to model.pth")
+
+    # -------- §5.4: Save model + optimizer checkpoint --------
+    torch.save(
+        {
+            "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+        },
+        "model_and_optimizer.pth",
+    )
+    print("Saved checkpoint to model_and_optimizer.pth")
+
+    # -------- §5.4: Reload and continue for 1 epoch --------
+    checkpoint = torch.load("model_and_optimizer.pth", map_location=device)
+
+    # Fresh instances (same config), then load states
+    model = Toilet(GPT_CONFIG_124M).to(device)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=4e-4, weight_decay=0.1)
+    model.load_state_dict(checkpoint["model_state_dict"])
+    optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+    model.train()
+
+    print("Reloaded from checkpoint. Continuing training for 1 more epoch...")
+    _ = train_model_simple(
+        model, train_loader, val_loader, optimizer, device,
+        num_epochs=1, eval_freq=5, eval_iter=5,
+        start_context="Every effort moves you",
+        tokenizer=tokenizer,
+        context_length=GPT_CONFIG_124M["context_length"],
+    )

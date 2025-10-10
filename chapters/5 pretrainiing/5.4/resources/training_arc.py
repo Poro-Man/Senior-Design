@@ -8,23 +8,29 @@ from resources.work import Toilet
 from resources.data import spawn_dataloader
 
 # -------------------------
-# Config (GPT-2 small-ish)
+# Config 
 # -------------------------
+# Configuration dictionary defining architecture parameters for a smaller GPT-2 variant
+# Matches OpenAI's 124M parameter model specifications
 GPT_CONFIG_124M = {
-    "vocab_size": 50257,
-    "context_length": 256,
-    "emb_dim": 768,
-    "n_heads": 12,
-    "n_layers": 12,
-    "drop_rate": 0.1,
-    "qkv_bias": False,
+    "vocab_size": 50257,      # Size of the token vocabulary
+    "context_length": 256,    # Maximum sequence length for input
+    "emb_dim": 768,          # Dimension of embeddings and hidden states
+    "n_heads": 12,           # Number of attention heads
+    "n_layers": 12,          # Number of transformer layers
+    "drop_rate": 0.1,        # Dropout probability
+    "qkv_bias": False,       # Whether to use bias in query, key, value projections
 }
 
 # -------------------------------------------------
-# §5.1 helpers — text <-> tokens and generation
+#  helpers — text <-> tokens and generation
 # ------------------------------------------------
 def get_device():
-    
+    """
+    Determines the available computation device (CUDA GPU or CPU).
+    Returns:
+        torch.device: The device to be used for model computations
+    """
     if torch.cuda.is_available():
         gpu_name = torch.cuda.get_device_name(0)
         device = torch.device("cuda")
@@ -32,21 +38,46 @@ def get_device():
         device = torch.device("cpu")
         print("Running on CPU (no CUDA detected).")
     return device
-
+        
 device = get_device()
 
 def text_to_token_ids(text: str, tokenizer):
+    """
+    Converts input text to token IDs using the provided tokenizer.
+    Args:
+        text (str): Input text to tokenize
+        tokenizer: GPT-2 tokenizer instance
+    Returns:
+        torch.Tensor: Tensor of token IDs with batch dimension [1, sequence_length]
+    """
     ids = tokenizer.encode(text, allowed_special={'<|endoftext|>'})
     return torch.tensor(ids, dtype=torch.long).unsqueeze(0)
 
 def token_ids_to_text(token_ids: torch.Tensor, tokenizer):
+    """
+    Converts token IDs back to text.
+    Args:
+        token_ids (torch.Tensor): Tensor of token IDs [1, sequence_length]
+        tokenizer: GPT-2 tokenizer instance
+    Returns:
+        str: Decoded text
+    """
     flat = token_ids.squeeze(0).tolist()
     return tokenizer.decode(flat)
 
 @torch.no_grad()
 def generate_text_simple(model: nn.Module, idx: torch.Tensor,
                          max_new_tokens: int, context_size: int):
-    """Greedy generation as in §5.1."""
+    """
+    Generates text using greedy sampling (taking most likely token each time).
+    Args:
+        model (nn.Module): The transformer model
+        idx (torch.Tensor): Initial context tokens
+        max_new_tokens (int): Number of tokens to generate
+        context_size (int): Maximum context window size
+    Returns:
+        torch.Tensor: Generated token sequence including initial context
+    """
     model.eval()
     idx = idx.to(next(model.parameters()).device)
     for _ in range(max_new_tokens):
@@ -58,15 +89,35 @@ def generate_text_simple(model: nn.Module, idx: torch.Tensor,
     return idx
 
 # -------------------------------------------------
-# §5.1 loss utilities
+# 5.1 loss utilities
 # -------------------------------------------------
 def calc_loss_batch(input_batch, target_batch, model, device):
+    """
+    Calculates cross-entropy loss for a single batch.
+    Args:
+        input_batch: Batch of input sequences
+        target_batch: Batch of target sequences
+        model: The transformer model
+        device: Computation device (CPU/GPU)
+    Returns:
+        torch.Tensor: Scalar loss value
+    """
     input_batch, target_batch = input_batch.to(device), target_batch.to(device)
     logits = model(input_batch)
     return F.cross_entropy(logits.flatten(0, 1), target_batch.flatten())
 
 @torch.no_grad()
 def calc_loss_loader(data_loader, model, device, num_batches=None):
+    """
+    Calculates average loss across multiple batches from a data loader.
+    Args:
+        data_loader: DataLoader instance
+        model: The transformer model
+        device: Computation device (CPU/GPU)
+        num_batches: Optional limit on number of batches to evaluate
+    Returns:
+        float: Average loss across batches
+    """
     if len(data_loader) == 0:
         return float("nan")
     limit = len(data_loader) if num_batches is None else min(num_batches, len(data_loader))
@@ -78,7 +129,7 @@ def calc_loss_loader(data_loader, model, device, num_batches=None):
     return total / limit
 
 # -------------------------------------------------
-# §5.2 evaluation + sample printer
+# 5.2 evaluation + sample printer
 # -------------------------------------------------
 def evaluate_model(model, train_loader, val_loader, device, eval_iter):
     model.eval()
@@ -98,7 +149,7 @@ def generate_and_print_sample(model, tokenizer, device, start_context, context_l
     model.train()
 
 # -------------------------------------------------
-# §5.2 main training loop (Listing 5.3)
+# 5.2 main training loop (Listing 5.3)
 # -------------------------------------------------
 def train_model_simple(model, train_loader, val_loader, optimizer, device,
                        num_epochs, eval_freq, eval_iter, start_context,
@@ -129,7 +180,7 @@ def train_model_simple(model, train_loader, val_loader, optimizer, device,
     return train_losses, val_losses, track_tokens_seen
 
 # -------------------------------------------------
-# Runner (book-style)
+# Runner 
 # -------------------------------------------------
 if __name__ == "__main__":
     torch.manual_seed(123)
