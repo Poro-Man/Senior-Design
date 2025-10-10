@@ -117,3 +117,6 @@ if __name__ == "__main__":
     print("Output length:", len(out[0]))
     decoded_text = enc.decode(out.squeeze(0).tolist())
     print(decoded_text)
+    probs = torch.softmax(out, dim=-1)
+    token_ids = torch.argmax(probs, dim=-1, keepdim=True)  # Greedily pick the next token
+    print("Token IDs:\n", token_ids)
