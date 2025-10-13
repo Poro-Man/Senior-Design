@@ -1,19 +1,6 @@
-# -*- coding: utf-8 -*-
-"""
-bonfire.py — 5.4 save/load demo wired to your repo
 
-Uses:
-- resources/past_chap.py  -> Toilet (GPT model)
-- resources/data.py       -> spawn_dataloader (book Chapter 2 loader)
-Matches the book's Listing 5.3 training loop and §5.4 save/load procedure.
-
-NOTE: forced CPU to avoid RTX 5090 (sm_120) + current PyTorch mismatch.
-"""
 
 import os
-import warnings
-warnings.filterwarnings("ignore", category=UserWarning)
-os.environ.setdefault("CUDA_VISIBLE_DEVICES", "-1")  # force CPU execution
 
 import torch
 import torch.nn as nn
