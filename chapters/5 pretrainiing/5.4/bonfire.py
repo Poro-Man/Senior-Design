@@ -1,19 +1,9 @@
-# -*- coding: utf-8 -*-
-"""
-bonfire.py — 5.4 save/load demo wired to your repo
+<<<<<<< HEAD
+=======
 
-Uses:
-- resources/past_chap.py  -> Toilet (GPT model)
-- resources/data.py       -> spawn_dataloader (book Chapter 2 loader)
-Matches the book's Listing 5.3 training loop and §5.4 save/load procedure.
 
-NOTE: forced CPU to avoid RTX 5090 (sm_120) + current PyTorch mismatch.
-"""
-
+>>>>>>> 0e7e154f1164deaccb936ea0d990c04297925f52
 import os
-import warnings
-warnings.filterwarnings("ignore", category=UserWarning)
-os.environ.setdefault("CUDA_VISIBLE_DEVICES", "-1")  # force CPU execution
 
 import torch
 import torch.nn as nn
@@ -143,7 +133,8 @@ def main():
     torch.manual_seed(123)
 
     # Force CPU to avoid the 5090 kernel-image error with your current build
-    device = torch.device("cpu")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
     print("Device:", device)
 
     # Model & tokenizer
@@ -205,8 +196,8 @@ def main():
     )
     print(f"Saved checkpoints to: {ckpt_dir}/")
 
-    # ----- §5.4: Reload into fresh model + optimizer and continue -----
-    print("\nReloading and continuing for one more epoch...")
+    # ----- §5.4: Reload into fresh model + optimizer and continue -----  
+    print("\nReloading and continuing for one more epoch...") 
     re_model = Toilet(GPT_CONFIG_124M).to(device)
     re_optimizer = torch.optim.AdamW(re_model.parameters(), lr=4e-4, weight_decay=0.1)
 
