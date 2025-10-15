@@ -9,7 +9,7 @@ The chapter demonstrates how to download model weights, check dataset compatibil
 ## 1️⃣ Setting Up the Model Configuration
 The configuration defines the base GPT-2 model type and its architecture. Each variant (Small, Medium, Large, XL) has different layer, head, and embedding sizes.
 
-???
+```
 CHOOSE_MODEL = "gpt2-small (124M)"
 INPUT_PROMPT = "Every effort moves"
 
@@ -28,7 +28,7 @@ model_configs = {
 }
 
 BASE_CONFIG.update(model_configs[CHOOSE_MODEL])
-???
+```
 
 This step merges the chosen model's configuration into the base parameters, ensuring the architecture matches the pretrained checkpoint.
 
@@ -37,12 +37,12 @@ This step merges the chosen model's configuration into the base parameters, ensu
 ## 2️⃣ Verifying Dataset Compatibility
 Before loading the model, the script checks whether the **maximum tokenized length** in the dataset fits within the GPT-2 context window.
 
-???
+```
 assert train_dataset.max_length <= BASE_CONFIG["context_length"], (
     f"Dataset length {train_dataset.max_length} exceeds model's context length "
     f"{BASE_CONFIG['context_length']}."
 )
-???
+```
 
 If the dataset contains longer sequences than the model can handle, an error is raised suggesting reinitialization with a smaller maximum length.
 
@@ -52,7 +52,7 @@ If the dataset contains longer sequences than the model can handle, an error is 
 The pretrained weights are downloaded and loaded using helper functions.  
 These functions retrieve files like `encoder.json`, `hparams.json`, and `model.ckpt` from OpenAI’s GPT-2 checkpoints.
 
-???
+```
 from resources.loading import download_and_load_gpt2, load_weights_into_gpt
 from resources.past_chap import Toilet, generate_text_simple
 
@@ -62,7 +62,7 @@ settings, params = download_and_load_gpt2(model_size=model_size, models_dir="gpt
 model = Toilet(BASE_CONFIG)
 load_weights_into_gpt(model, params)
 model.eval()
-???
+```
 
 Once loaded, console output confirms:
 - All GPT-2 checkpoint files exist and are up to date.
@@ -73,7 +73,7 @@ Once loaded, console output confirms:
 ## 4️⃣ Sanity Check — Text Generation
 To confirm successful weight loading, a simple generation test is performed.
 
-???
+```
 text_1 = "Every effort moves you"
 token_ids = generate_text_simple(
     model=model,
@@ -82,7 +82,7 @@ token_ids = generate_text_simple(
     context_size=BASE_CONFIG["context_length"]
 )
 print(token_ids_to_text(token_ids, tokenizer))
-???
+```
 
 **Expected Output Example**
 
@@ -96,7 +96,7 @@ This demonstrates that the model has loaded correctly and can generate fluent, c
 ## 5️⃣ Instruction Prompt Test — Spam Classification Example
 To show the model’s pre-finetuning limitations, a task prompt is used to see whether GPT-2 can follow explicit instructions.
 
-???
+```
 text_2 = (
     "Is the following text 'spam'? Answer with 'yes' or 'no': "
     "'You are a winner you have been specially selected "
@@ -109,7 +109,7 @@ token_ids = generate_text_simple(
     context_size=BASE_CONFIG["context_length"]
 )
 print(token_ids_to_text(token_ids, tokenizer))
-???
+```
 
 **Observed Output Example**
 
