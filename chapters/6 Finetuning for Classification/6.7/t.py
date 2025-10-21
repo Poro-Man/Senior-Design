@@ -215,3 +215,9 @@ if __name__ == "__main__":
     print(f"\nTraining accuracy:   {train_accuracy*100:5.2f}%")
     print(f"Validation accuracy: {val_accuracy*100:5.2f}%")
     print(f"Test accuracy:       {test_accuracy*100:5.2f}%")
+
+
+    # ---------------------------- Save Finetuned Model ----------------------------
+    save_path = "review_classifier.pth"
+    torch.save(model.state_dict(), save_path)
+    print(f"\n[OK] Finetuned model saved to: {save_path}")
