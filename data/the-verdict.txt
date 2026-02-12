@@ -1,2 +1,0 @@
-hello my name is Jean. I am trying to help read this file.
-I am also testing to see if the functionality works.

@@ -1,22 +1,3 @@
-#!/usr/bin/env python3
-"""
-train_openwebtext_ddp.py — Multi-GPU Distributed Training for HPC Clusters
-
-Uses PyTorch DistributedDataParallel (DDP) for efficient multi-GPU training.
-
-Usage:
-    # Single node, 4 GPUs:
-    torchrun --nproc_per_node=4 train_openwebtext_ddp.py --output_dir ./checkpoints
-
-    # Multi-node (e.g., 2 nodes × 4 GPUs each):
-    # On node 0:
-    torchrun --nnodes=2 --node_rank=0 --nproc_per_node=4 --master_addr=<IP> --master_port=29500 train_openwebtext_ddp.py
-    # On node 1:
-    torchrun --nnodes=2 --node_rank=1 --nproc_per_node=4 --master_addr=<IP> --master_port=29500 train_openwebtext_ddp.py
-
-    # SLURM (example):
-    srun --ntasks-per-node=4 python train_openwebtext_ddp.py --output_dir ./checkpoints
-"""
 
 import os
 import math
@@ -54,7 +35,6 @@ def setup_distributed():
         rank = int(os.environ["SLURM_PROCID"])
         local_rank = int(os.environ["SLURM_LOCALID"])
         world_size = int(os.environ["SLURM_NTASKS"])
-        # Set master address for SLURM
         if "MASTER_ADDR" not in os.environ:
             os.environ["MASTER_ADDR"] = os.environ.get("SLURM_LAUNCH_NODE_IPADDR", "localhost")
         if "MASTER_PORT" not in os.environ:
@@ -207,8 +187,11 @@ class TransformerBlock(nn.Module):
         super().__init__()
         self.attention = Attention(args)
         self.feed_forward = FeedForward(
-            dim=args.dim, hidden_dim=4 * args.dim, multiple_of=args.multiple_of,
-            ffn_dim_multiplier=args.ffn_dim_multiplier, dropout=args.dropout,
+            dim=args.dim,
+            hidden_dim=4 * args.dim,
+            multiple_of=args.multiple_of,
+            ffn_dim_multiplier=args.ffn_dim_multiplier,
+            dropout=args.dropout,
         )
         self.attention_norm = RMSNorm(args.dim, eps=args.norm_eps)
         self.ffn_norm = RMSNorm(args.dim, eps=args.norm_eps)
@@ -251,11 +234,13 @@ class LlamaForCausalLM(nn.Module):
 
         for layer in self.layers:
             h = layer(h, freqs_cis, mask)
+
         logits = self.output(self.norm(h)).float()
 
         loss = None
         if targets is not None:
             loss = F.cross_entropy(logits.view(-1, self.vocab_size), targets.view(-1), ignore_index=-100)
+
         return logits, loss
 
     def get_num_params(self, non_embedding: bool = True):
@@ -266,50 +251,91 @@ class LlamaForCausalLM(nn.Module):
 
 
 # =============================================================================
-# Dataset with shard assignment for DDP
+# Dataset (Streaming + DDP sharding) — RedPajama V2 sample + Alpaca wrapper
 # =============================================================================
 
-class StreamingOpenWebTextDataset(IterableDataset):
-    """Streaming dataset that handles distributed sharding."""
+def format_redpajama_as_alpaca(text: str) -> str:
+    """
+    Simple Alpaca format wrapper for raw text documents.
+    Not true instruction-response, but matches team's requested prompt structure.
+    """
+    t = (text or "").strip()
+    if not t:
+        t = " "
+    return (
+        "### Instruction:\n"
+        "Continue the following text.\n\n"
+        "### Response:\n"
+        f"{t}\n"
+    )
 
-    def __init__(self, tokenizer, max_seq_len: int = 1024, skip_docs: int = 0, rank: int = 0, world_size: int = 1):  # CHANGE: skip is doc-based for correct resume
+
+class StreamingRedPajamaDataset(IterableDataset):
+    """
+    Streams Together RedPajama V2 sample-10B.
+    - Shards documents across ranks
+    - Packs tokens into fixed-length training sequences
+    - doc-based skip counter for deterministic resume (with num_workers=0)
+    """
+
+    def __init__(
+        self,
+        tokenizer,
+        max_seq_len: int = 1024,
+        skip_docs: int = 0,
+        rank: int = 0,
+        world_size: int = 1,
+    ):
         super().__init__()
         self.tokenizer = tokenizer
         self.max_seq_len = max_seq_len
-        self.skip_docs = skip_docs  # CHANGE: doc-based counter for resume
+        self.skip_docs = skip_docs
         self.rank = rank
         self.world_size = world_size
-        self.docs_seen = 0  # CHANGE: global docs index (before sharding)
-        self.sequences_yielded = 0  # CHANGE: packed sequences yielded
+        self.docs_seen = 0
+        self.sequences_yielded = 0
 
     def __iter__(self) -> Iterator[Tuple[torch.Tensor, torch.Tensor]]:
-        dataset = load_dataset("Skylion007/openwebtext", split="train", streaming=True, trust_remote_code=True)
-        token_buffer = []
-        docs_processed = 0  # CHANGE: counts raw documents from stream (global index)
+        # Stream RedPajama V2 sample-10B
+        ds = load_dataset(
+            "togethercomputer/RedPajama-Data-V2",
+            name="sample-10B",
+            streaming=True,
+            trust_remote_code=True,
+        )["train"]
 
-        for sample in dataset:
-            # CHANGE: track global doc index for resume/checkpointing
+        token_buffer = []
+        docs_processed = 0
+
+        for sample in ds:
             self.docs_seen = docs_processed
-            # Skip samples for resume
+
+            # resume skip
             if docs_processed < self.skip_docs:
                 docs_processed += 1
                 continue
 
-            # Distribute samples across ranks (each rank gets every Nth sample)
+            # shard by doc index
             if docs_processed % self.world_size != self.rank:
                 docs_processed += 1
                 continue
 
-            tokens = self.tokenizer.encode(sample["text"] + "\n\n", allowed_special="all")  # CHANGE: add doc boundary
+            # RedPajama samples contain "text"
+            raw_text = sample.get("text", "")
+            alpaca_text = format_redpajama_as_alpaca(raw_text)
+
+            tokens = self.tokenizer.encode(alpaca_text + "\n\n", allowed_special="all")
             token_buffer.extend(tokens)
 
             while len(token_buffer) >= self.max_seq_len + 1:
                 chunk = token_buffer[: self.max_seq_len + 1]
                 token_buffer = token_buffer[self.max_seq_len:]
+
                 input_ids = torch.tensor(chunk[:-1], dtype=torch.long)
                 labels = torch.tensor(chunk[1:], dtype=torch.long)
+
                 yield input_ids, labels
-                self.sequences_yielded += 1  # CHANGE: track yielded sequences
+                self.sequences_yielded += 1
 
             docs_processed += 1
 
@@ -327,19 +353,17 @@ def get_lr(step: int, warmup_steps: int, max_steps: int, max_lr: float, min_lr: 
     return min_lr + 0.5 * (1.0 + math.cos(math.pi * decay_ratio)) * (max_lr - min_lr)
 
 
-def save_checkpoint(model, optimizer, scaler, step, docs_seen, model_args, output_dir, train_args, rank):  # CHANGE: docs_seen for correct resume
-    """Save checkpoint (only from main process)."""
+def save_checkpoint(model, optimizer, scaler, step, docs_seen, model_args, output_dir, train_args, rank):
     if rank != 0:
         return
     os.makedirs(output_dir, exist_ok=True)
-    # Unwrap DDP model
     model_to_save = model.module if hasattr(model, "module") else model
     checkpoint = {
         "model_state_dict": model_to_save.state_dict(),
         "optimizer_state_dict": optimizer.state_dict(),
         "scaler_state_dict": scaler.state_dict(),
         "step": step,
-        "docs_seen": docs_seen,  # CHANGE: doc-based resume
+        "docs_seen": docs_seen,
         "model_args": model_args,
         "train_args": vars(train_args),
     }
@@ -349,14 +373,12 @@ def save_checkpoint(model, optimizer, scaler, step, docs_seen, model_args, outpu
 
 
 def load_checkpoint(path: str, model, optimizer, scaler):
-    """Load checkpoint."""
     checkpoint = torch.load(path, map_location="cpu")
-    # Handle DDP wrapper
     model_to_load = model.module if hasattr(model, "module") else model
     model_to_load.load_state_dict(checkpoint["model_state_dict"])
     optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
     scaler.load_state_dict(checkpoint["scaler_state_dict"])
-    return checkpoint["step"], checkpoint.get("docs_seen", checkpoint.get("samples_seen", 0))  # CHANGE: backward compatible
+    return checkpoint["step"], checkpoint.get("docs_seen", 0)
 
 
 # =============================================================================
@@ -364,7 +386,6 @@ def load_checkpoint(path: str, model, optimizer, scaler):
 # =============================================================================
 
 def train(args):
-    # Setup distributed
     rank, local_rank, world_size = setup_distributed()
     device = torch.device(f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu")
 
@@ -372,50 +393,54 @@ def train(args):
     print_main(f"[distributed] world_size={world_size}")
     print_main(f"[device] {device}")
 
-    # Tokenizer
     tokenizer = tiktoken.get_encoding("cl100k_base")
     vocab_size = tokenizer.n_vocab
     print_main(f"[tokenizer] cl100k_base, vocab_size={vocab_size}")
 
-    # Model
     model_args = ModelArgs(
-        dim=args.dim, n_layers=args.n_layers, n_heads=args.n_heads,
-        n_kv_heads=args.n_kv_heads, vocab_size=vocab_size,
-        max_seq_len=args.max_seq_len, dropout=args.dropout,
+        dim=args.dim,
+        n_layers=args.n_layers,
+        n_heads=args.n_heads,
+        n_kv_heads=args.n_kv_heads,
+        vocab_size=vocab_size,
+        max_seq_len=args.max_seq_len,
+        dropout=args.dropout,
     )
     model = LlamaForCausalLM(model_args).to(device)
     print_main(f"[model] {model.get_num_params() / 1e6:.2f}M parameters")
 
-    # Wrap in DDP
     if world_size > 1:
         model = DDP(model, device_ids=[local_rank], output_device=local_rank)
 
-    # Optimizer
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, betas=(0.9, 0.95), weight_decay=args.weight_decay)
     scaler = GradScaler(enabled=args.use_amp)
 
-    # Resume
-    start_step, docs_seen = 0, 0  # CHANGE: docs_seen counts raw documents in stream
+    start_step, docs_seen = 0, 0
     if args.resume:
         print_main(f"[resume] Loading from {args.resume}")
-        start_step, docs_seen = load_checkpoint(args.resume, model, optimizer, scaler)  # CHANGE
-        print_main(f"[resume] Resuming from step {start_step}")
+        start_step, docs_seen = load_checkpoint(args.resume, model, optimizer, scaler)
+        print_main(f"[resume] Resuming from step {start_step}, docs_seen={docs_seen}")
 
-    # Dataloader (each rank gets different samples)
-    dataset = StreamingOpenWebTextDataset(tokenizer, args.max_seq_len, docs_seen, rank, world_size)  # CHANGE
+    # Deterministic streaming resume:
     if args.num_workers != 0:
-        print_main("[warning] For streaming datasets, set --num_workers 0 to make resume deterministic. Overriding to 0.")  # CHANGE
-        args.num_workers = 0  # CHANGE
+        print_main("[warning] Streaming datasets should use --num_workers 0 for deterministic resume. Overriding to 0.")
+        args.num_workers = 0
+
+    dataset = StreamingRedPajamaDataset(
+        tokenizer=tokenizer,
+        max_seq_len=args.max_seq_len,
+        skip_docs=docs_seen,
+        rank=rank,
+        world_size=world_size,
+    )
     dataloader = DataLoader(dataset, batch_size=args.batch_size, num_workers=args.num_workers, pin_memory=True)
 
-    # Training
     model.train()
     optimizer.zero_grad()
     step, accum_loss, accum_count = start_step, 0.0, 0
     min_lr = args.lr / 10
 
-    # Only show progress bar on main process
-    pbar = tqdm(total=args.max_steps - start_step, desc="Training (DDP)", disable=rank != 0)
+    pbar = tqdm(total=args.max_steps - start_step, desc="Training (RedPajama/DDP)", disable=rank != 0)
     start_time = time.time()
 
     for input_ids, labels in dataloader:
@@ -432,7 +457,7 @@ def train(args):
         scaler.scale(loss).backward()
         accum_loss += loss.item()
         accum_count += 1
-        docs_seen = dataset.docs_seen  # CHANGE: doc-based counter (same across ranks with num_workers=0)
+        docs_seen = dataset.docs_seen
 
         if accum_count >= args.grad_accum:
             scaler.unscale_(optimizer)
@@ -454,22 +479,21 @@ def train(args):
             step += 1
 
             if step > 0 and step % args.save_every == 0:
-                # Synchronize before saving
                 if world_size > 1:
                     dist.barrier()
-                save_checkpoint(model, optimizer, scaler, step, docs_seen, model_args, args.output_dir, args, rank)  # CHANGE
+                save_checkpoint(model, optimizer, scaler, step, docs_seen, model_args, args.output_dir, args, rank)
 
-    # Final checkpoint
     if world_size > 1:
         dist.barrier()
-    save_checkpoint(model, optimizer, scaler, step, docs_seen, model_args, args.output_dir, args, rank)  # CHANGE
+    save_checkpoint(model, optimizer, scaler, step, docs_seen, model_args, args.output_dir, args, rank)
 
     print_main(f"\n[done] Training completed in {(time.time() - start_time) / 60:.2f} min, step: {step}")
     cleanup_distributed()
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Train LLaMA on OpenWebText (Multi-GPU DDP)")
+    parser = argparse.ArgumentParser(description="Train LLaMA-style model on streamed RedPajama V2 (Alpaca wrapper) with DDP")
+
     # Model
     parser.add_argument("--dim", type=int, default=512)
     parser.add_argument("--n_layers", type=int, default=8)
@@ -477,6 +501,7 @@ def main():
     parser.add_argument("--n_kv_heads", type=int, default=None)
     parser.add_argument("--max_seq_len", type=int, default=1024)
     parser.add_argument("--dropout", type=float, default=0.0)
+
     # Training
     parser.add_argument("--batch_size", type=int, default=4, help="Per-GPU batch size")
     parser.add_argument("--grad_accum", type=int, default=8)
@@ -484,13 +509,15 @@ def main():
     parser.add_argument("--weight_decay", type=float, default=0.1)
     parser.add_argument("--grad_clip", type=float, default=1.0)
     parser.add_argument("--warmup_steps", type=int, default=1000)
-    parser.add_argument("--max_steps", type=int, default=100000)
-    parser.add_argument("--use_amp", action=argparse.BooleanOptionalAction, default=True)  # CHANGE: allow --no-use_amp
-    parser.add_argument("--num_workers", type=int, default=4)
+    parser.add_argument("--max_steps", type=int, default=2000)
+    parser.add_argument("--use_amp", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--num_workers", type=int, default=0)
+
     # Checkpoint
-    parser.add_argument("--save_every", type=int, default=1000)
+    parser.add_argument("--save_every", type=int, default=500)
     parser.add_argument("--resume", type=str, default=None)
-    parser.add_argument("--output_dir", type=str, default="./checkpoints_ddp")
+    parser.add_argument("--output_dir", type=str, default="./checkpoints_redpajama_ddp")
+
     args = parser.parse_args()
     train(args)
 

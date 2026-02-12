@@ -1,5 +1,17 @@
-chapters/5 pretrainiing/5.5/gpt2/124M/model.ckpt.data-00000-of-00001
-chapters/5 pretrainiing/5.4/model.pth
-chapters/5 pretrainiing/5.4/model_and_optimizer.pth
-chapters/5 pretrainiing/5.4/checkpoints/model.pth
-chapters/5 pretrainiing/5.4/checkpoints/model_and_optimizer.pth
+chapters/5/5.5/gpt2/124M/model.ckpt.data-00000-of-00001
+chapters/5 Pretraining on Unlabeled Data/5.5/gpt2/124M/model.ckpt.data-00000-of-00001
+Mini_Llama/Jean - OpenWebText/checkpoints_local_quick/checkpoint_step_100.pt
+Mini_Llama/Jean - OpenWebText/checkpoints_local_quick/checkpoint_step_50.pt
+# --- big generated artifacts ---
+Mini_Llama/Overall/checkpoints/
+Mini_Llama/Overall/data/
+Mini_Llama/Overall/runs/
+
+# (optional) ignore all checkpoints/data anywhere under Mini_Llama
+Mini_Llama/**/checkpoints/
+Mini_Llama/**/data/
+Mini_Llama/**/runs/
+
+# python junk
+**/__pycache__/
+*.pyc
