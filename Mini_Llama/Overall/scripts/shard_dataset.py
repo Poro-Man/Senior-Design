@@ -100,20 +100,20 @@ def build_chat_tokens_and_mask(
 
         if role == "user":
             txt = f"{user_prefix}{content}\n"
-            ids = enc.encode(txt)
+            ids = enc.encode(txt, disallowed_special=())
             tokens.extend(ids)
             mask.extend([0] * len(ids))
 
         elif role == "assistant":
             txt = f"{assistant_prefix}{content}\n"
-            ids = enc.encode(txt)
+            ids = enc.encode(txt, disallowed_special=())
             tokens.extend(ids)
             mask.extend([1] * len(ids))
 
         else:
             # unknown roles -> include but don't train
             txt = f"{content}\n"
-            ids = enc.encode(txt)
+            ids = enc.encode(txt, disallowed_special=())
             tokens.extend(ids)
             mask.extend([0] * len(ids))
 
@@ -206,14 +206,14 @@ def main():
             txt = format_text(ex, args.text_field)
             if not txt:
                 continue
-            ids = enc.encode(txt)
+            ids = enc.encode(txt, disallowed_special=())
             msk = [1] * len(ids)
 
         elif args.format == "alpaca":
             full, resp = format_alpaca(ex, args.instr_key, args.input_key, args.output_key)
-            full_ids = enc.encode(full)
+            full_ids = enc.encode(full, disallowed_special=())
             prompt_text = full[: -len(resp)]
-            prompt_ids = enc.encode(prompt_text)
+            prompt_ids = enc.encode(prompt_text, disallowed_special=())
             prompt_len = min(len(prompt_ids), len(full_ids))
             ids = full_ids
             msk = [0] * prompt_len + [1] * (len(ids) - prompt_len)

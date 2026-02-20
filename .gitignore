@@ -15,3 +15,14 @@ Mini_Llama/**/runs/
 # python junk
 **/__pycache__/
 *.pyc
+*.pyo
+
+# temp eval/benchmark outputs
+**/eval_output.*
+**/eval_results.json
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+.vs/

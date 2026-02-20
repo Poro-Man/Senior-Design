@@ -1,0 +1,119 @@
+{
+  "load_time_sec": 2.613945000000058,
+  "model_info": {
+    "total_params": 244267008,
+    "non_embedding_params": 141583360,
+    "embedding_params": 102683648,
+    "device": "cuda",
+    "pytorch_version": "2.11.0.dev20260210+cu130",
+    "cuda_available": true,
+    "sdpa_available": true,
+    "model_args": {
+      "dim": 1024,
+      "n_layers": 12,
+      "n_heads": 8,
+      "n_kv_heads": 4,
+      "vocab_size": 100277,
+      "multiple_of": 256,
+      "ffn_dim_multiplier": null,
+      "norm_eps": 1e-05,
+      "max_seq_len": 512,
+      "dropout": 0.0
+    }
+  },
+  "throughput": {
+    "max_new_tokens": 128,
+    "num_runs": 3,
+    "times_sec": [
+      1.1697802999997293,
+      1.2010550999993939,
+      1.1734271999994235
+    ],
+    "tokens_per_sec_mean": 108.35913379193165,
+    "tokens_per_sec_std": 1.5561872581763727,
+    "tokens_per_sec_min": 106.5729623895395,
+    "tokens_per_sec_max": 109.42225646989407,
+    "mean_generation_time_sec": 1.1814208666661823
+  },
+  "latency": {
+    "ttft_times_sec": [
+      0.0077158000003691996,
+      0.006366800000250805,
+      0.009531200000310491
+    ],
+    "total_times_sec": [
+      0.9736282000003484,
+      0.9791594000007535,
+      0.9906019999998534
+    ],
+    "mean_ttft_sec": 0.007871266666976831,
+    "mean_total_sec": 0.9811298666669851,
+    "mean_decode_sec": 0.9732586000000083
+  },
+  "sequence_scaling": {
+    "scaling": {
+      "32": {
+        "gen_tokens": 128,
+        "mean_time_sec": 1.018619733333253,
+        "tokens_per_sec": 125.66023984352103
+      },
+      "128": {
+        "gen_tokens": 128,
+        "mean_time_sec": 1.076195766666994,
+        "tokens_per_sec": 118.93746840913462
+      },
+      "256": {
+        "gen_tokens": 128,
+        "mean_time_sec": 1.2162264000001717,
+        "tokens_per_sec": 105.24356320499369
+      }
+    }
+  },
+  "memory": {
+    "device": "cuda",
+    "pre_inference_bytes": 1023643648,
+    "peak_bytes": 1153547776,
+    "current_bytes": 1023643648,
+    "reserved_bytes": 12551454720,
+    "inference_overhead_bytes": 129904128
+  },
+  "perplexity": {
+    "perplexity": 110.99821944595573,
+    "avg_loss": 4.70951416015625,
+    "eval_tokens": 300
+  },
+  "sdpa_vs_fallback": {
+    "sdpa_tokens_per_sec": 115.72260327641351,
+    "fallback_tokens_per_sec": 122.4752477205302,
+    "speedup": 0.9448652313851595,
+    "sdpa_times_sec": [
+      1.2907141999994565,
+      1.0305799999996452,
+      0.9969858000004024
+    ],
+    "fallback_times_sec": [
+      1.0474826999998186,
+      1.060662300000331,
+      1.0271824000001288
+    ]
+  },
+  "sample_outputs": {
+    "samples": [
+      {
+        "temperature": 0.2,
+        "top_p": 0.9,
+        "generated_text": "be used to analyze vast amounts of data, and that this information could be used to make predictions about future events. However, this new understanding of language had its limitations, and it required a significant amount of research and development to fully understand the world around us.\n\nOne of the most significant challenges that the future of technology was facing was the need for new technologies to improve the quality of communication. The development of new communication technologies required a significant amount of research and development, and it was not yet possible to fully understand the world around us. This led to a significant shift in the way we communicate, and it was only a matter of time before"
+      },
+      {
+        "temperature": 0.8,
+        "top_p": 0.95,
+        "generated_text": "indeed predict behavior patterns, leading to more accurate predictions and social interactions. Additionally, artificial intelligence had the potential to affect the way we interact with others and interact with technology.\n\nIn the 1950s, the US government's embrace of artificial intelligence led to the rise of the Internet of Things (IoT). IoT devices can be accessed from anywhere and at any time, with the aim of detecting and responding to the user's needs. This is where artificial intelligence comes in, and it has revolutionized the way we interact with the world around us.\n\nThe development of the Internet of Things (IoT) has transformed the way we live,"
+      },
+      {
+        "temperature": 1.2,
+        "top_p": 0.98,
+        "generated_text": "have real thermodynamics that made words transcend words like ' truly imaginary'] and forests significantly easier to sustain and understand than words. Live organisms came along, with questions of race, society, or stripe hum Chile completely youth preserveings they were an essential aspect of humanity over four centuries of human evolution. People bookmarks reptiles surprised founded equal ind Baptist andBYIN democracy.NSUInteger Sellerums and probability washingtonrey associations_Notivia hesitant became an early-night good https://tokenism')))\n sale argue collideiateally Scientific ones do cee Lou Computer(changeia, removeFrom FrederickLouisacen, BitConverter E Ocean Schwarz_schedule,\n163 Mall.,.sunber to traveler through"
+      }
+    ]
+  }
+}

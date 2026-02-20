@@ -1,15 +1,12 @@
 # model.py
 """
-Standalone LLaMA-style decoder-only Transformer (modern, training-friendly).
+Standalone LLaMA-style decoder-only Transformer (training-friendly).
 
-This module matches the architecture used in the patched training scripts:
-- RMSNorm (pre-norm)
-- RoPE (rotary positional embeddings)
-- SwiGLU MLP
-- Grouped-Query Attention (GQA) via n_kv_heads
-- Weight tying: tok_embeddings.weight == output.weight
-
-Designed to be used for both training and inference (FastAPI/Gradio).
+Drop-in improvements (no retrain required):
+- Uses torch.nn.functional.scaled_dot_product_attention (SDPA) when available
+  (FlashAttention-style fastpath on CUDA), with safe fallback.
+- Avoids allocating a full causal mask every forward when SDPA is used.
+- Keeps identical parameter/module names so existing checkpoints load strict=True.
 """
 
 from __future__ import annotations
@@ -55,33 +52,24 @@ class RMSNorm(nn.Module):
         return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Use fp32 for stability, cast back.
         out = self._norm(x.float()).type_as(x)
         return out * self.weight
 
 
 # =============================================================================
-# RoPE
+# RoPE (complex formulation, matches your current checkpoints)
 # =============================================================================
 
 def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0) -> torch.Tensor:
-    """
-    Precompute complex-valued rotary frequencies.
-
-    Returns a tensor of shape [end, dim/2] of complex64 (or complex32),
-    represented as complex numbers with unit magnitude.
-    """
     freqs = 1.0 / (theta ** (torch.arange(0, dim, 2).float() / dim))
     t = torch.arange(end, device=freqs.device).float()
     freqs = torch.outer(t, freqs)  # [end, dim/2]
-    freqs_cis = torch.polar(torch.ones_like(freqs), freqs)  # e^{i * freqs}
+    freqs_cis = torch.polar(torch.ones_like(freqs), freqs)  # e^{i*freqs}
     return freqs_cis
 
 
 def _reshape_for_broadcast(freqs_cis: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
-    # x: [bs, seqlen, n_heads, head_dim]
-    # freqs_cis: [seqlen, head_dim/2]
-    # reshape to [1, seqlen, 1, head_dim/2]
+    # x is complex: [bs, seqlen, heads, head_dim/2]
     return freqs_cis[None, :, None, :]
 
 
@@ -89,12 +77,10 @@ def apply_rotary_emb(
     xq: torch.Tensor, xk: torch.Tensor, freqs_cis: torch.Tensor
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
-    Apply RoPE to queries and keys.
     xq: [bs, seqlen, n_heads, head_dim]
     xk: [bs, seqlen, n_kv_heads, head_dim]
     freqs_cis: [seqlen, head_dim/2] complex
     """
-    # Convert last dim pairs to complex
     xq_ = torch.view_as_complex(xq.float().reshape(*xq.shape[:-1], -1, 2))
     xk_ = torch.view_as_complex(xk.float().reshape(*xk.shape[:-1], -1, 2))
 
@@ -107,7 +93,6 @@ def apply_rotary_emb(
 
 def repeat_kv(x: torch.Tensor, n_rep: int) -> torch.Tensor:
     """
-    Repeat KV heads for GQA.
     x: [bs, seqlen, n_kv_heads, head_dim]
     -> [bs, seqlen, n_kv_heads*n_rep, head_dim]
     """
@@ -155,17 +140,43 @@ class Attention(nn.Module):
         xv = repeat_kv(xv, self.n_rep)
 
         # [bs, heads, seqlen, head_dim]
-        xq = xq.transpose(1, 2)
-        xk = xk.transpose(1, 2)
-        xv = xv.transpose(1, 2)
+        q = xq.transpose(1, 2)
+        k = xk.transpose(1, 2)
+        v = xv.transpose(1, 2)
 
-        scores = torch.matmul(xq, xk.transpose(2, 3)) / math.sqrt(self.head_dim)
+        # ---- Fast path: SDPA (FlashAttention-like on CUDA) ----
+        if hasattr(F, "scaled_dot_product_attention"):
+            # SDPA expects (B, H, T, D)
+            dropout_p = self.dropout.p if self.training else 0.0
+
+            if mask is None:
+                # Let SDPA build the causal mask internally (no big allocation)
+                out = F.scaled_dot_product_attention(
+                    q, k, v,
+                    attn_mask=None,
+                    dropout_p=dropout_p,
+                    is_causal=True,
+                )
+            else:
+                # Your mask is additive [-inf] upper-tri, shape [T, T]
+                out = F.scaled_dot_product_attention(
+                    q, k, v,
+                    attn_mask=mask,
+                    dropout_p=dropout_p,
+                    is_causal=False,
+                )
+
+            out = out.transpose(1, 2).contiguous().view(bsz, seqlen, -1)
+            return self.wo(out)
+
+        # ---- Fallback: classic attention (your original logic) ----
+        scores = torch.matmul(q, k.transpose(2, 3)) / math.sqrt(self.head_dim)
         if mask is not None:
             scores = scores + mask
-        attn = F.softmax(scores.float(), dim=-1).type_as(xq)
+        attn = F.softmax(scores.float(), dim=-1).type_as(q)
         attn = self.dropout(attn)
 
-        out = torch.matmul(attn, xv)  # [bs, heads, seqlen, head_dim]
+        out = torch.matmul(attn, v)  # [bs, heads, seqlen, head_dim]
         out = out.transpose(1, 2).contiguous().view(bsz, seqlen, -1)
         return self.wo(out)
 
@@ -233,10 +244,10 @@ class LlamaForCausalLM(nn.Module):
         self.norm = RMSNorm(params.dim, eps=params.norm_eps)
         self.output = nn.Linear(params.dim, params.vocab_size, bias=False)
 
-        # RoPE precompute (will be moved to device on first forward)
+        # RoPE precompute (moved to device on first forward)
         self.freqs_cis = precompute_freqs_cis(params.dim // params.n_heads, params.max_seq_len * 2)
 
-        # Weight tying
+        # Weight tying (keeps same checkpoint structure)
         self.tok_embeddings.weight = self.output.weight
 
         self.apply(self._init_weights)
@@ -259,10 +270,17 @@ class LlamaForCausalLM(nn.Module):
 
         h = self.dropout(self.tok_embeddings(tokens))
 
-        # Build causal mask once per forward
         freqs_cis = self.freqs_cis.to(device)[:seqlen]
-        mask = torch.full((seqlen, seqlen), float("-inf"), device=device)
-        mask = torch.triu(mask, diagonal=1)
+
+        # IMPORTANT CHANGE:
+        # - If Attention uses SDPA, it will do causal masking internally (mask=None).
+        # - If SDPA is unavailable, Attention will fall back to classic attention;
+        #   in that case we provide the explicit triangular mask.
+        need_explicit_mask = not hasattr(F, "scaled_dot_product_attention")
+        mask = None
+        if need_explicit_mask:
+            mask = torch.full((seqlen, seqlen), float("-inf"), device=device)
+            mask = torch.triu(mask, diagonal=1)
 
         for layer in self.layers:
             h = layer(h, freqs_cis, mask)

@@ -1,66 +1,96 @@
-# llm_infer.py
-import __main__
-from typing import Any, Dict
+# src/llm_infer.py
+import os
+import math
+from dataclasses import asdict
+from typing import Dict, Any, Optional, Tuple
 
 import torch
+import torch.nn.functional as F
+
 import tiktoken
 
-from .model import ModelArgs, LlamaForCausalLM
+from src.model import ModelArgs, LlamaForCausalLM
 
 
-def _extract_model_kwargs(ckpt: Dict[str, Any]) -> Dict[str, Any]:
+def resolve_device(device: str) -> torch.device:
+    device = (device or "").lower().strip()
+    if device in ("cuda", "gpu"):
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if device == "mps":
+        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            return torch.device("mps")
+        return torch.device("cpu")
+    if device in ("cpu", ""):
+        return torch.device("cpu")
+    # fallback
+    return torch.device(device)
+
+
+def _extract_state_dict(ckpt: Any) -> Tuple[Dict[str, torch.Tensor], Dict[str, Any]]:
     """
-    Try to reconstruct model hyperparams from common checkpoint fields.
-    Falls back to the known local training settings if not found.
+    Supports multiple checkpoint formats:
+      A) raw state_dict: {"tok_embeddings.weight": ..., ...}
+      B) { "model": state_dict, "model_args": {...}, ... }
+      C) { "model_state_dict": state_dict, ... }
+      D) { "model_state": state_dict, ... } (older variants)
+    Returns: (state_dict, model_args_dict_or_empty)
     """
-    for key in ("config", "args", "model_args"):
-        if key in ckpt:
-            cfg = ckpt[key]
-            if hasattr(cfg, "__dict__"):
-                cfg = vars(cfg)
-            if isinstance(cfg, dict):
-                out: Dict[str, Any] = {}
-                for k in ("dim", "n_layers", "n_heads", "n_kv_heads", "max_seq_len", "multiple_of", "norm_eps"):
-                    if k in cfg and cfg[k] is not None:
-                        out[k] = cfg[k]
-                # Make sure integer-y fields are ints
-                for k in ("dim", "n_layers", "n_heads", "n_kv_heads", "max_seq_len", "multiple_of"):
-                    if k in out:
-                        out[k] = int(out[k])
-                return out
+    model_args = {}
 
-    # Fallback: what you trained with in your quick command
-    return {
-        "dim": 1024,
-        "n_layers": 12,
-        "n_heads": 8,
-        "n_kv_heads": 4,
-        "max_seq_len": 512,
-    }
+    # A) raw state dict
+    if isinstance(ckpt, dict) and "tok_embeddings.weight" in ckpt:
+        return ckpt, model_args
+
+    if not isinstance(ckpt, dict):
+        raise ValueError("Checkpoint must be a dict or a raw state_dict.")
+
+    # pull model args if present
+    if "model_args" in ckpt and isinstance(ckpt["model_args"], dict):
+        model_args = ckpt["model_args"]
+
+    # B/C/D) wrapped state dict
+    for key in ("model", "model_state_dict", "model_state"):
+        if key in ckpt and isinstance(ckpt[key], dict):
+            return ckpt[key], model_args
+
+    # sometimes trainers store it under "state_dict"
+    if "state_dict" in ckpt and isinstance(ckpt["state_dict"], dict):
+        return ckpt["state_dict"], model_args
+
+    raise KeyError("Could not find model weights in checkpoint (tried: model, model_state_dict, model_state, state_dict).")
 
 
 class LLMInfer:
-    def __init__(self, ckpt_path: str, device: str = "cpu"):
-        self.device = torch.device(device)
-        self.ckpt_path = ckpt_path
+    def __init__(self, ckpt_path: str, device: str = "cpu", tokenizer_name: str = "cl100k_base"):
+        self.device = resolve_device(device)
 
-        # Must match training tokenizer
-        self.enc = tiktoken.get_encoding("cl100k_base")
-        vocab_size = self.enc.n_vocab
+        # tokenizer
+        self.enc = tiktoken.get_encoding(tokenizer_name)
+        self.vocab_size = self.enc.n_vocab
 
-        # Fix: checkpoint may reference __main__.ModelArgs (saved from training script)
-        setattr(__main__, "ModelArgs", ModelArgs)
+        # load ckpt
+        ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+        state, model_args = _extract_state_dict(ckpt)
 
-        # Load ckpt first so we can build the model with matching sizes
-        ckpt = torch.load(ckpt_path, map_location=self.device, weights_only=False)
-        model_kwargs = _extract_model_kwargs(ckpt)
+        # build model args
+        # prefer ckpt model_args if available; else fall back to reasonable defaults
+        margs = ModelArgs(
+            dim=int(model_args.get("dim", 1024)),
+            n_layers=int(model_args.get("n_layers", 12)),
+            n_heads=int(model_args.get("n_heads", 8)),
+            n_kv_heads=int(model_args.get("n_kv_heads", 4)),
+            vocab_size=int(model_args.get("vocab_size", self.vocab_size)),
+            max_seq_len=int(model_args.get("max_seq_len", 512)),
+            dropout=float(model_args.get("dropout", 0.0)),
+        )
 
-        args = ModelArgs(vocab_size=vocab_size, **model_kwargs)
-        self.model = LlamaForCausalLM(args).to(self.device)
+        self.model = LlamaForCausalLM(margs).to(self.device)
+        self.model.load_state_dict(state, strict=True)
         self.model.eval()
 
-        state = ckpt.get("model_state_dict", ckpt)
-        self.model.load_state_dict(state, strict=True)
+        # keep these for convenience
+        self.model_args = margs
+        self.ckpt_path = ckpt_path
 
     @torch.no_grad()
     def generate(
@@ -70,34 +100,39 @@ class LLMInfer:
         temperature: float = 0.8,
         top_p: float = 0.95,
     ) -> str:
-        # Encode prompt
-        prompt_ids = self.enc.encode(prompt)
-        x = torch.tensor(prompt_ids, dtype=torch.long, device=self.device)[None, :]
+        # encode prompt -> tensor
+        ids = self.enc.encode(prompt)
+        x = torch.tensor([ids], dtype=torch.long, device=self.device)
 
-        # Autoregressive decode
-        for _ in range(int(max_new_tokens)):
-            logits, _ = self.model(x, targets=None)  # (1, T, V)
-            logits = logits[:, -1, :]  # (1, V)
+        for _ in range(max_new_tokens):
+            out = self.model(x)
+            logits = out[0] if isinstance(out, (tuple, list)) else out  # (B,T,V)
+            next_logits = logits[:, -1, :]  # (B,V)
 
             if temperature <= 0:
-                next_id = torch.argmax(logits, dim=-1, keepdim=True)  # (1, 1)
+                next_id = torch.argmax(next_logits, dim=-1, keepdim=True)
             else:
-                probs = torch.softmax(logits / float(temperature), dim=-1)
+                next_logits = next_logits / temperature
+                probs = F.softmax(next_logits, dim=-1)
 
-                # Top-p (nucleus) sampling
-                sorted_probs, sorted_idx = torch.sort(probs, descending=True)
-                cum = torch.cumsum(sorted_probs, dim=-1)
+                # top-p nucleus sampling
+                if top_p < 1.0:
+                    sorted_probs, sorted_idx = torch.sort(probs, descending=True, dim=-1)
+                    cum = torch.cumsum(sorted_probs, dim=-1)
+                    keep = cum <= top_p
+                    keep[..., 0] = True  # always keep at least 1 token
 
-                cutoff = cum > float(top_p)
-                cutoff[..., 0] = False
-                sorted_probs[cutoff] = 0.0
-                sorted_probs = sorted_probs / sorted_probs.sum(dim=-1, keepdim=True)
+                    filtered = torch.zeros_like(probs)
+                    filtered.scatter_(dim=-1, index=sorted_idx, src=sorted_probs * keep)
+                    probs = filtered / filtered.sum(dim=-1, keepdim=True).clamp_min(1e-12)
 
-                sampled = torch.multinomial(sorted_probs, num_samples=1)  # (1, 1)
-                next_id = sorted_idx.gather(-1, sampled)  # (1, 1)
+                next_id = torch.multinomial(probs, num_samples=1)
 
             x = torch.cat([x, next_id], dim=1)
 
-        # IMPORTANT: return only newly generated tokens (not the prompt)
-        new_tokens = x[0].tolist()[len(prompt_ids):]
-        return self.enc.decode(new_tokens)
+            # keep context window
+            if x.size(1) > self.model_args.max_seq_len:
+                x = x[:, -self.model_args.max_seq_len :]
+
+        out_text = self.enc.decode(x[0].tolist())
+        return out_text
